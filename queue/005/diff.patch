@@ -1,0 +1,122 @@
+diff --git a/src/graphrag_lite/embeddings.py b/src/graphrag_lite/embeddings.py
+new file mode 100644
+index 0000000..2759291
+--- /dev/null
++++ b/src/graphrag_lite/embeddings.py
+@@ -0,0 +1,116 @@
++"""Embedding interface and implementations.
++
++HashEmbedder
++    Deterministic pure-Python fallback. Each token is hashed with MD5 (stable
++    across runs/platforms) and its hash integer is used to index a fixed-dim
++    accumulator vector. The result is L2-normalised.
++
++SentenceTransformerEmbedder
++    Thin wrapper around ``sentence_transformers.SentenceTransformer``; lazy-imported.
++    Only available when the ``embeddings`` optional dependency is installed.
++"""
++
++from __future__ import annotations
++
++import hashlib
++import math
++from abc import ABC, abstractmethod
++
++
++class Embedder(ABC):
++    """Abstract base class for text embedders."""
++
++    @abstractmethod
++    def embed(self, texts: list[str]) -> list[list[float]]:
++        """Return one embedding vector per text string."""
++
++
++# ---------------------------------------------------------------------------
++# HashEmbedder â€” deterministic, zero-dependency fallback
++# ---------------------------------------------------------------------------
++
++
++class HashEmbedder(Embedder):
++    """Deterministic hashing embedder (no external dependencies required).
++
++    Algorithm:
++      1. Tokenise text by whitespace (lower-cased).
++      2. For each token compute ``int.from_bytes(md5(token).digest(), 'little')``.
++      3. Accumulate into a ``dim``-dimensional float vector by setting
++         ``vec[h % dim] += 1.0`` (bag-of-hashed-tokens).
++      4. L2-normalise the vector (zero vector stays zero).
++
++    MD5 is used instead of Python's built-in ``hash()`` because Python
++    randomises hash seeds per process (PYTHONHASHSEED), which would make the
++    embedder non-deterministic across runs.
++    """
++
++    def __init__(self, dim: int = 256) -> None:
++        self.dim = dim
++
++    def _embed_one(self, text: str) -> list[float]:
++        vec = [0.0] * self.dim
++        for token in text.lower().split():
++            h = int.from_bytes(hashlib.md5(token.encode()).digest(), "little")
++            vec[h % self.dim] += 1.0
++        norm = math.sqrt(sum(x * x for x in vec))
++        if norm > 0.0:
++            vec = [x / norm for x in vec]
++        return vec
++
++    def embed(self, texts: list[str]) -> list[list[float]]:
++        return [self._embed_one(t) for t in texts]
++
++
++# ---------------------------------------------------------------------------
++# SentenceTransformerEmbedder â€” optional, lazy-loaded
++# ---------------------------------------------------------------------------
++
++
++class SentenceTransformerEmbedder(Embedder):
++    """Embedder backed by ``sentence_transformers``.
++
++    Lazy-imports ``sentence_transformers`` on first use.  Raises ``ImportError``
++    if the package is not installed (install with ``pip install graphrag-lite[embeddings]``).
++    """
++
++    def __init__(self, model_name: str = "all-MiniLM-L6-v2") -> None:
++        self.model_name = model_name
++        self._model = None  # lazy
++
++    def _load(self) -> None:
++        if self._model is None:
++            try:
++                from sentence_transformers import SentenceTransformer  # noqa: PLC0415
++            except ImportError as exc:
++                raise ImportError(
++                    "Install graphrag-lite[embeddings] to use SentenceTransformerEmbedder."
++                ) from exc
++            self._model = SentenceTransformer(self.model_name)
++
++    def embed(self, texts: list[str]) -> list[list[float]]:
++        self._load()
++        vecs = self._model.encode(texts, convert_to_numpy=True)  # type: ignore[union-attr]
++        return [v.tolist() for v in vecs]
++
++
++# ---------------------------------------------------------------------------
++# Similarity helpers
++# ---------------------------------------------------------------------------
++
++
++def cosine_similarity(a: list[float], b: list[float]) -> float:
++    """Compute cosine similarity between two vectors.
++
++    Both vectors are assumed to be already L2-normalised (HashEmbedder guarantees
++    this).  For un-normalised vectors the result is still correct but slower because
++    the norms are computed here as well.
++
++    Returns a float in [-1, 1].  Returns 0.0 if either vector is zero.
++    """
++    dot = sum(ai * bi for ai, bi in zip(a, b, strict=False))
++    norm_a = math.sqrt(sum(x * x for x in a))
++    norm_b = math.sqrt(sum(x * x for x in b))
++    if norm_a == 0.0 or norm_b == 0.0:
++        return 0.0
++    return dot / (norm_a * norm_b)

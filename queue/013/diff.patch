@@ -1,0 +1,73 @@
+diff --git a/tests/test_cli.py b/tests/test_cli.py
+new file mode 100644
+index 0000000..672353f
+--- /dev/null
++++ b/tests/test_cli.py
+@@ -0,0 +1,67 @@
++"""Tests for graphrag_lite.cli (smoke tests using tmp_path)."""
++
++from __future__ import annotations
++
++import json
++from pathlib import Path
++
++from graphrag_lite.cli import main
++
++
++def _write_corpus(path: Path, docs: list[str]) -> None:
++    path.write_text(json.dumps(docs), encoding="utf-8")
++
++
++def test_cli_build_creates_output_dir(tmp_path):
++    corpus_file = tmp_path / "corpus.json"
++    output_dir = tmp_path / "index"
++    _write_corpus(
++        corpus_file,
++        [
++            "Machine Learning is a field of Artificial Intelligence.",
++            "Knowledge Graphs store entities and relationships.",
++        ],
++    )
++    main(["build", "--corpus", str(corpus_file), "--output", str(output_dir)])
++    assert output_dir.exists()
++    assert (output_dir / "passages.json").exists()
++    assert (output_dir / "graph.json").exists()
++
++
++def test_cli_ask_returns_string(tmp_path, capsys):
++    corpus_file = tmp_path / "corpus.json"
++    output_dir = tmp_path / "index"
++    _write_corpus(
++        corpus_file,
++        [
++            "Machine Learning is a field of Artificial Intelligence.",
++            "Neural Networks underpin modern Machine Learning.",
++            "Knowledge Graphs store entities and relationships.",
++        ],
++    )
++    main(["build", "--corpus", str(corpus_file), "--output", str(output_dir)])
++    main(["ask", "--index", str(output_dir), "--query", "Machine Learning"])
++    captured = capsys.readouterr()
++    assert len(captured.out) > 0
++
++
++def test_cli_build_plain_text_corpus(tmp_path):
++    corpus_file = tmp_path / "corpus.txt"
++    corpus_file.write_text(
++        "Machine Learning algorithms improve over time.\n"
++        "Knowledge Graphs connect entities semantically.\n",
++        encoding="utf-8",
++    )
++    output_dir = tmp_path / "index2"
++    main(["build", "--corpus", str(corpus_file), "--output", str(output_dir)])
++    assert output_dir.exists()
++
++
++def test_cli_ask_output_has_citation(tmp_path, capsys):
++    corpus_file = tmp_path / "corpus.json"
++    output_dir = tmp_path / "index"
++    _write_corpus(corpus_file, ["Machine Learning is used in many Artificial Intelligence tasks."])
++    main(["build", "--corpus", str(corpus_file), "--output", str(output_dir)])
++    main(["ask", "--index", str(output_dir), "--query", "Machine Learning Artificial Intelligence"])
++    captured = capsys.readouterr()
++    assert "[P0]" in captured.out

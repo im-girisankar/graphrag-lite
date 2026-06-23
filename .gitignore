@@ -39,3 +39,6 @@ htmlcov/
 *.index/
 my_index/
 /index/
+
+# drip scratch
+.drip/_*

@@ -1,0 +1,61 @@
+diff --git a/tests/test_corpus.py b/tests/test_corpus.py
+new file mode 100644
+index 0000000..64f3b0c
+--- /dev/null
++++ b/tests/test_corpus.py
+@@ -0,0 +1,55 @@
++"""Tests for graphrag_lite.corpus."""
++
++from __future__ import annotations
++
++from graphrag_lite.corpus import Passage, split_corpus
++
++
++def test_split_returns_passages():
++    docs = ["hello world foo bar", "another document here"]
++    passages = split_corpus(docs, passage_size=10)
++    assert len(passages) >= 1
++    assert all(isinstance(p, Passage) for p in passages)
++
++
++def test_passage_ids_unique():
++    docs = ["word " * 50, "word " * 50, "word " * 50]
++    passages = split_corpus(docs, passage_size=30)
++    ids = [p.id for p in passages]
++    assert len(ids) == len(set(ids)), "Passage ids must be unique"
++
++
++def test_passage_word_count_approximate():
++    doc = " ".join(str(i) for i in range(100))  # 100 words
++    passages = split_corpus([doc], passage_size=30)
++    for p in passages:
++        words = p.text.split()
++        assert 1 <= len(words) <= 30
++
++
++def test_split_short_doc_single_passage():
++    doc = "Short text only five words here"
++    passages = split_corpus([doc], passage_size=100)
++    assert len(passages) == 1
++    assert passages[0].text == doc
++
++
++def test_split_empty_doc_skipped():
++    passages = split_corpus(["", "hello world"], passage_size=10)
++    assert len(passages) == 1
++    assert passages[0].text == "hello world"
++
++
++def test_passage_metadata_has_doc_idx():
++    docs = ["first doc", "second doc"]
++    passages = split_corpus(docs, passage_size=100)
++    doc_indices = [p.metadata["doc_idx"] for p in passages]
++    assert 0 in doc_indices
++    assert 1 in doc_indices
++
++
++def test_passage_ids_sequential():
++    docs = ["a b c d e f g", "h i j k l m n"]
++    passages = split_corpus(docs, passage_size=4)
++    assert passages[0].id == "P0"
++    assert passages[1].id == "P1"

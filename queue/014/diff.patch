@@ -1,0 +1,70 @@
+diff --git a/tests/test_composer.py b/tests/test_composer.py
+new file mode 100644
+index 0000000..53285b7
+--- /dev/null
++++ b/tests/test_composer.py
+@@ -0,0 +1,64 @@
++"""Tests for graphrag_lite.composer."""
++
++from __future__ import annotations
++
++from graphrag_lite.composer import compose_answer
++from graphrag_lite.corpus import Passage
++from graphrag_lite.retriever import RetrievalResult
++
++
++def _result(pid: str, score: float = 0.5, entities: list[str] | None = None) -> RetrievalResult:
++    return RetrievalResult(
++        passage_id=pid,
++        score=score,
++        vector_score=score,
++        graph_score=0.0,
++        matched_entities=entities or [],
++        matched_edges=[],
++    )
++
++
++def test_compose_answer_contains_citation_tags():
++    passages = {
++        "P0": Passage(id="P0", text="Machine Learning is a field of AI."),
++        "P1": Passage(id="P1", text="Neural Networks underpin deep learning."),
++    }
++    results = [_result("P0", 0.9), _result("P1", 0.7)]
++    answer = compose_answer("What is ML?", results, passages)
++    assert "[P0]" in answer
++    assert "[P1]" in answer
++
++
++def test_compose_answer_includes_passage_text():
++    passages = {"P0": Passage(id="P0", text="Machine Learning is powerful.")}
++    results = [_result("P0", 0.8)]
++    answer = compose_answer("What is ML?", results, passages)
++    assert "Machine Learning is powerful." in answer
++
++
++def test_compose_answer_includes_query():
++    passages = {"P0": Passage(id="P0", text="Some text.")}
++    results = [_result("P0")]
++    answer = compose_answer("What is the answer?", results, passages)
++    assert "What is the answer?" in answer
++
++
++def test_compose_answer_no_results():
++    answer = compose_answer("What?", [], {})
++    assert "No relevant passages found" in answer
++
++
++def test_compose_answer_entities_note():
++    passages = {"P0": Passage(id="P0", text="ML text here.")}
++    results = [_result("P0", entities=["Machine Learning", "Neural Networks"])]
++    answer = compose_answer("ML question", results, passages)
++    assert "Machine Learning" in answer or "[P0]" in answer
++
++
++def test_compose_answer_missing_passage_skipped():
++    passages = {"P0": Passage(id="P0", text="Present passage.")}
++    # P1 not in passages dict â€” should not crash
++    results = [_result("P0"), _result("P1")]
++    answer = compose_answer("query", results, passages)
++    assert "[P0]" in answer
++    assert "Present passage." in answer

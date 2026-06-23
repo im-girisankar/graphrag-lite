@@ -1,0 +1,79 @@
+diff --git a/tests/conftest.py b/tests/conftest.py
+new file mode 100644
+index 0000000..83065cc
+--- /dev/null
++++ b/tests/conftest.py
+@@ -0,0 +1,73 @@
++"""Shared pytest fixtures for graphrag-lite tests."""
++
++from __future__ import annotations
++
++import pytest
++
++from graphrag_lite.eval import FIXTURE_DOCS
++from graphrag_lite.pipeline import GraphRAGPipeline
++
++# ---------------------------------------------------------------------------
++# Small fixture corpus (same as FIXTURE_DOCS from eval.py)
++# ---------------------------------------------------------------------------
++
++SMALL_CORPUS_DOCS: list[str] = list(FIXTURE_DOCS)
++
++
++@pytest.fixture()
++def small_corpus() -> list[str]:
++    """Four short documents covering ML, Neural Networks, and Knowledge Graphs."""
++    return list(SMALL_CORPUS_DOCS)
++
++
++@pytest.fixture()
++def built_pipeline(small_corpus: list[str]) -> GraphRAGPipeline:
++    """A fully-built GraphRAGPipeline on the small corpus fixture."""
++    pipeline = GraphRAGPipeline(passage_size=200)
++    pipeline.build(small_corpus)
++    return pipeline
++
++
++@pytest.fixture()
++def eval_pipeline() -> GraphRAGPipeline:
++    """Pipeline built on FIXTURE_DOCS from eval.py."""
++    pipeline = GraphRAGPipeline(passage_size=200)
++    pipeline.build(FIXTURE_DOCS)
++    return pipeline
++
++
++# ---------------------------------------------------------------------------
++# 2-hop graph fixture (isolated, for retriever tests)
++#
++# Chain: Alpha Entity --(P0 edge)--> Bridge Entity --(P1 edge)--> Omega Terminus
++#
++#   P0: Alpha Entity + Bridge Entity co-occur (query anchor passage)
++#   P1: Bridge Entity + Omega Terminus co-occur (bridge passage; no query tokens)
++#   P2: Omega Terminus only; deliberately uses words with ZERO token overlap
++#       with the query string "Alpha Entity":
++#       tokens in "Alpha Entity" â†’ ["alpha", "entity"]
++#       tokens in P2             â†’ ["omega","terminus","xylophone","zeppelin",
++#                                   "quartz","vibrato","wombat","provides","features"]
++#       â†’ vector_score(P2) = 0.0 for query "Alpha Entity"
++#
++#   Pure-vector (alpha=1.0), top_k=2: returns [P0, P1], NOT P2 (score=0).
++#   Hybrid     (alpha=0.5), top_k=3: P2 gets graph_score=1.0 via 2-hop expansion
++#                                     â†’ score = 0.5 > 0, so P2 IS returned.
++# ---------------------------------------------------------------------------
++
++TWO_HOP_DOCS: list[str] = [
++    # P0: Alpha Entity and Bridge Entity co-occur
++    "Alpha Entity and Bridge Entity are connected. Alpha Entity relies on Bridge Entity.",
++    # P1: Bridge Entity and Omega Terminus co-occur (bridge; no "Alpha" or "Entity" body word)
++    "Bridge Entity links to Omega Terminus. Omega Terminus extends Bridge Entity further.",
++    # P2: Omega Terminus only; body = deliberately foreign vocabulary
++    "Omega Terminus xylophone zeppelin quartz vibrato wombat. Omega Terminus provides wombat features.",
++]
++
++
++@pytest.fixture()
++def two_hop_pipeline() -> GraphRAGPipeline:
++    """Pipeline with a controlled 2-hop entity chain: Alpha Entityâ†’Bridge Entityâ†’Omega Terminus."""
++    pipeline = GraphRAGPipeline(passage_size=200)
++    pipeline.build(TWO_HOP_DOCS)
++    return pipeline

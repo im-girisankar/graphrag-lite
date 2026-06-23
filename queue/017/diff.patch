@@ -1,0 +1,112 @@
+diff --git a/tests/test_eval.py b/tests/test_eval.py
+new file mode 100644
+index 0000000..d766f9f
+--- /dev/null
++++ b/tests/test_eval.py
+@@ -0,0 +1,106 @@
++"""Tests for graphrag_lite.eval."""
++
++from __future__ import annotations
++
++import pytest
++
++from graphrag_lite.eval import (
++    FIXTURE_EXAMPLES,
++    EvalExample,
++    evaluate,
++    hit_rate,
++    recall_at_k,
++)
++from graphrag_lite.retriever import HybridRetriever
++
++
++def test_recall_at_k_perfect():
++    assert recall_at_k(["P0", "P1", "P2"], ["P0"], k=1) == 1.0
++
++
++def test_recall_at_k_miss():
++    assert recall_at_k(["P1", "P2"], ["P0"], k=2) == 0.0
++
++
++def test_recall_at_k_partial():
++    result = recall_at_k(["P0", "P2"], ["P0", "P1"], k=2)
++    assert result == 0.5
++
++
++def test_recall_at_k_empty_relevant():
++    # No relevant passages â†’ trivially perfect
++    assert recall_at_k(["P0"], [], k=1) == 1.0
++
++
++def test_hit_rate_hit():
++    assert hit_rate(["P0", "P1"], ["P1"], k=2) == 1.0
++
++
++def test_hit_rate_miss():
++    assert hit_rate(["P1", "P2"], ["P0"], k=2) == 0.0
++
++
++def test_hit_rate_k_cuts_off():
++    # Relevant P1 is at position 2 (0-indexed 1), k=1 cuts it off
++    assert hit_rate(["P0", "P1"], ["P1"], k=1) == 0.0
++
++
++def test_evaluate_returns_dict(eval_pipeline):
++    retriever = HybridRetriever(
++        graph=eval_pipeline.graph,
++        vector_index=eval_pipeline.vector_index,
++        passages=eval_pipeline.passages,
++        embedder=eval_pipeline.embedder,
++    )
++    metrics = evaluate(retriever, FIXTURE_EXAMPLES, k=4)
++    assert "recall@k" in metrics
++    assert "hit_rate" in metrics
++    assert 0.0 <= metrics["recall@k"] <= 1.0
++    assert 0.0 <= metrics["hit_rate"] <= 1.0
++
++
++def test_evaluate_empty_examples(eval_pipeline):
++    retriever = HybridRetriever(
++        graph=eval_pipeline.graph,
++        vector_index=eval_pipeline.vector_index,
++        passages=eval_pipeline.passages,
++        embedder=eval_pipeline.embedder,
++    )
++    metrics = evaluate(retriever, [], k=5)
++    assert metrics["recall@k"] == 0.0
++    assert metrics["hit_rate"] == 0.0
++
++
++def test_graph_expansion_surfaces_low_vector_passage(eval_pipeline):
++    """Graph expansion surfaces a passage that pure vector ranking would miss.
++
++    For the query 'Machine Learning', the Backpropagation passage P1 shares no
++    tokens with the query, so its vector_score is 0.0. Yet the 2-hop chain
++    Machine Learning -> Neural Networks -> Backpropagation gives P1 graph_score
++    == 1.0, so hybrid retrieval still surfaces it. This is the concrete GraphRAG
++    advantage demonstrated on the eval fixture (the general 2-hop proof lives in
++    test_retriever.py with the two_hop_pipeline fixture).
++    """
++    retriever = HybridRetriever(
++        graph=eval_pipeline.graph,
++        vector_index=eval_pipeline.vector_index,
++        passages=eval_pipeline.passages,
++        embedder=eval_pipeline.embedder,
++    )
++    by_id = {r.passage_id: r for r in retriever.retrieve("Machine Learning", top_k=4, alpha=0.5)}
++    assert "P1" in by_id, "P1 should be returned at top_k=4"
++    assert by_id["P1"].vector_score == pytest.approx(0.0), (
++        f"P1 should have no vector overlap with 'Machine Learning'; "
++        f"got {by_id['P1'].vector_score}"
++    )
++    assert by_id["P1"].graph_score == pytest.approx(1.0), (
++        f"P1 should be reached via the 2-hop graph chain; got {by_id['P1'].graph_score}"
++    )
++
++
++def test_fixture_examples_have_valid_structure():
++    for ex in FIXTURE_EXAMPLES:
++        assert isinstance(ex, EvalExample)
++        assert isinstance(ex.question, str) and ex.question
++        assert isinstance(ex.relevant_passage_ids, list)
++        assert all(isinstance(pid, str) for pid in ex.relevant_passage_ids)

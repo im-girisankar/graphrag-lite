@@ -1,0 +1,166 @@
+diff --git a/src/graphrag_lite/retriever.py b/src/graphrag_lite/retriever.py
+new file mode 100644
+index 0000000..d1ebf96
+--- /dev/null
++++ b/src/graphrag_lite/retriever.py
+@@ -0,0 +1,160 @@
++"""Hybrid graph+vector retriever.
++
++Hybrid Scoring
++--------------
++Given a query string ``q`` and a candidate passage ``p``:
++
++    score(p) = alpha * vector_score(p) + (1 - alpha) * graph_score(p)
++
++where
++
++    vector_score(p)  = cosine_similarity(embed(q), embed(p))   in [0, 1]
++
++    graph_score(p)   = min(1.0, |matched_entities(p)| / max(1, |query_entities|))
++
++    matched_entities(p) = passage_entities(p) âˆ© expanded_entities(q)
++
++    expanded_entities(q) = query_entities âˆª 2-hop graph neighbours of query_entities
++
++``alpha`` defaults to 0.5 (equal weight); set to 1.0 for pure vector, 0.0 for pure graph.
++
++graph_score denominator note
++-----------------------------
++The heuristic extractor (``extract_entities``) greedily matches multi-word
++Title-Case phrases before individual words.  A query such as "Machine Learning
++Neural Networks" produces a *single* 4-word entity rather than two separate
++entities, so ``|query_entities| == 1`` and the denominator collapses to 1.
++
++Consequently, for typical natural-language queries processed by the heuristic
++extractor, ``graph_score`` behaves as a **presence-weighted signal**: if the
++expanded entity set intersects any passage entity, graph_score == 1.0; otherwise
++0.0.  A fractional graph_score (e.g. 0.5) arises only when the query produces
++two or more distinct extracted entities and the passage matches a strict subset
++of the expanded set.  The substring-match augmentation in ``retrieve()`` ensures
++that known graph nodes mentioned verbatim in the query are also expanded,
++regardless of how the extractor tokenises them.
++
++Retrieval steps
++---------------
++1. Extract entities from the query (heuristic extractor).
++2. Augment with any graph node whose label appears verbatim in the query string.
++3. Expand via 2-hop graph neighbourhood to capture indirect connections.
++4. Embed the query; score all indexed passages by vector similarity.
++5. Compute graph_score for every passage.
++6. Combine scores; sort descending; return top_k RetrievalResult objects.
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass, field
++
++from graphrag_lite.corpus import Passage
++from graphrag_lite.embeddings import Embedder
++from graphrag_lite.extractor import extract_entities
++from graphrag_lite.graph import KnowledgeGraph
++from graphrag_lite.index import VectorIndex
++
++
++@dataclass
++class RetrievalResult:
++    """A single retrieved passage with provenance information."""
++
++    passage_id: str
++    score: float  # combined hybrid score
++    vector_score: float
++    graph_score: float
++    matched_entities: list[str] = field(default_factory=list)
++    matched_edges: list[tuple[str, str]] = field(default_factory=list)
++
++
++class HybridRetriever:
++    """Combines vector similarity and graph neighbourhood expansion."""
++
++    def __init__(
++        self,
++        graph: KnowledgeGraph,
++        vector_index: VectorIndex,
++        passages: dict[str, Passage],
++        embedder: Embedder,
++    ) -> None:
++        self.graph = graph
++        self.vector_index = vector_index
++        self.passages = passages
++        self.embedder = embedder
++
++    def retrieve(
++        self,
++        query: str,
++        top_k: int = 5,
++        alpha: float = 0.5,
++        graph_hops: int = 2,
++    ) -> list[RetrievalResult]:
++        """Retrieve top-k passages using hybrid scoring.
++
++        Args:
++            query: Natural language question or keyword string.
++            top_k: Number of results to return.
++            alpha: Weight for vector score (0.0 = pure graph, 1.0 = pure vector).
++            graph_hops: Neighbourhood expansion depth (default 2).
++
++        Returns:
++            List of RetrievalResult sorted by score descending.
++        """
++        # --- Step 1: extract query entities and expand via graph ---
++        query_entities = extract_entities(query)
++        expanded: set[str] = set(query_entities)
++        for ent in query_entities:
++            if ent in self.graph.nodes:
++                expanded |= self.graph.neighbors(ent, hops=graph_hops)
++
++        # The heuristic extractor can greedily merge several Title-Case entities
++        # into one span (e.g. the query "Machine Learning Neural Networks" yields
++        # a single 4-word entity). Also match any known graph entity that appears
++        # verbatim in the query, so such queries still connect to the graph.
++        for node in self.graph.nodes:
++            if node not in expanded and node in query:
++                expanded.add(node)
++                expanded |= self.graph.neighbors(node, hops=graph_hops)
++
++        n_query_entities = max(1, len(query_entities))
++
++        # --- Step 2: vector scores for ALL passages ---
++        q_vec = self.embedder.embed([query])[0]
++        # Query all entries (unlimited top_k for combining)
++        all_vector = self.vector_index.query(q_vec, top_k=len(self.passages))
++        vector_map: dict[str, float] = dict(all_vector)
++
++        # --- Step 3: graph scores ---
++        results: list[RetrievalResult] = []
++        for pid in self.passages:
++            passage_ents = self.graph.passage_entities.get(pid, set())
++            matched = list(passage_ents & expanded)
++            graph_score = min(1.0, len(matched) / n_query_entities)
++
++            v_score = vector_map.get(pid, 0.0)
++            # Clamp vector score to [0, 1] (cosine can be slightly negative)
++            v_score = max(0.0, v_score)
++
++            hybrid = alpha * v_score + (1.0 - alpha) * graph_score
++
++            # Matched edges: edges between matched entities that exist in graph
++            matched_edges: list[tuple[str, str]] = []
++            for i, ea in enumerate(matched):
++                for eb in matched[i + 1 :]:
++                    key = (ea, eb) if ea <= eb else (eb, ea)
++                    if key in self.graph.edges:
++                        matched_edges.append(key)
++
++            results.append(
++                RetrievalResult(
++                    passage_id=pid,
++                    score=hybrid,
++                    vector_score=v_score,
++                    graph_score=graph_score,
++                    matched_entities=matched,
++                    matched_edges=matched_edges,
++                )
++            )
++
++        results.sort(key=lambda r: r.score, reverse=True)
++        return results[:top_k]

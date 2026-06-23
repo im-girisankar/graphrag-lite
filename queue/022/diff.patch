@@ -1,0 +1,191 @@
+diff --git a/tests/test_retriever.py b/tests/test_retriever.py
+new file mode 100644
+index 0000000..cfffc43
+--- /dev/null
++++ b/tests/test_retriever.py
+@@ -0,0 +1,185 @@
++"""Tests for graphrag_lite.retriever (including 2-hop graph expansion)."""
++
++from __future__ import annotations
++
++import pytest
++
++from graphrag_lite.retriever import HybridRetriever, RetrievalResult
++
++
++def test_retrieve_returns_results(built_pipeline):
++    retriever = HybridRetriever(
++        graph=built_pipeline.graph,
++        vector_index=built_pipeline.vector_index,
++        passages=built_pipeline.passages,
++        embedder=built_pipeline.embedder,
++    )
++    results = retriever.retrieve("Machine Learning", top_k=3)
++    assert len(results) > 0
++    assert all(isinstance(r, RetrievalResult) for r in results)
++
++
++def test_retrieve_result_fields(built_pipeline):
++    retriever = HybridRetriever(
++        graph=built_pipeline.graph,
++        vector_index=built_pipeline.vector_index,
++        passages=built_pipeline.passages,
++        embedder=built_pipeline.embedder,
++    )
++    results = retriever.retrieve("Neural Networks", top_k=2)
++    for r in results:
++        assert isinstance(r.passage_id, str)
++        assert isinstance(r.score, float)
++        assert isinstance(r.vector_score, float)
++        assert isinstance(r.graph_score, float)
++        assert 0.0 <= r.score <= 2.0  # alpha*v + (1-alpha)*g, each in [0,1]
++
++
++def test_retrieve_scores_descending(built_pipeline):
++    retriever = HybridRetriever(
++        graph=built_pipeline.graph,
++        vector_index=built_pipeline.vector_index,
++        passages=built_pipeline.passages,
++        embedder=built_pipeline.embedder,
++    )
++    results = retriever.retrieve("Machine Learning Artificial Intelligence", top_k=4)
++    scores = [r.score for r in results]
++    assert scores == sorted(scores, reverse=True)
++
++
++def test_alpha_one_gives_pure_vector(two_hop_pipeline):
++    """With alpha=1.0, score should equal vector_score (graph_score contribution = 0)."""
++    retriever = HybridRetriever(
++        graph=two_hop_pipeline.graph,
++        vector_index=two_hop_pipeline.vector_index,
++        passages=two_hop_pipeline.passages,
++        embedder=two_hop_pipeline.embedder,
++    )
++    results = retriever.retrieve("Alpha Entity", top_k=3, alpha=1.0)
++    for r in results:
++        assert abs(r.score - r.vector_score) < 1e-9, (
++            f"alpha=1.0: expected score==vector_score, got {r.score} vs {r.vector_score}"
++        )
++
++
++def test_alpha_zero_gives_pure_graph(two_hop_pipeline):
++    """With alpha=0.0, score should equal graph_score (vector contribution = 0)."""
++    retriever = HybridRetriever(
++        graph=two_hop_pipeline.graph,
++        vector_index=two_hop_pipeline.vector_index,
++        passages=two_hop_pipeline.passages,
++        embedder=two_hop_pipeline.embedder,
++    )
++    results = retriever.retrieve("Alpha Entity", top_k=3, alpha=0.0)
++    for r in results:
++        assert abs(r.score - r.graph_score) < 1e-9, (
++            f"alpha=0.0: expected score==graph_score, got {r.score} vs {r.graph_score}"
++        )
++
++
++def test_two_hop_graph_expansion_reaches_omega_terminus(two_hop_pipeline):
++    """Graph 2-hop expansion from Alpha Entity must reach Omega Terminus."""
++    graph = two_hop_pipeline.graph
++    nbrs = graph.neighbors("Alpha Entity", hops=2)
++    assert "Omega Terminus" in nbrs, (
++        f"2-hop neighbors of 'Alpha Entity' should include 'Omega Terminus'; got {nbrs}"
++    )
++
++
++def test_two_hop_graph_finds_p2_via_expansion(two_hop_pipeline):
++    """P2 (containing Omega Terminus) is retrieved with alpha=0.0 (pure graph).
++
++    The graph path is: Alpha Entity --[P0 edge]--> Bridge Entity --[P1 edge]--> Omega Terminus.
++    Omega Terminus is in P2's passage_entities, so graph expansion surfaces P2.
++
++    With alpha=0.0, P2's graph_score = 1.0 (Omega Terminus in expanded set).
++    """
++    retriever = HybridRetriever(
++        graph=two_hop_pipeline.graph,
++        vector_index=two_hop_pipeline.vector_index,
++        passages=two_hop_pipeline.passages,
++        embedder=two_hop_pipeline.embedder,
++    )
++    results = retriever.retrieve("Alpha Entity", top_k=3, alpha=0.0)
++    result_ids = [r.passage_id for r in results]
++    assert "P2" in result_ids, (
++        f"alpha=0.0 graph retrieval must surface P2 via 2-hop expansion; got {result_ids}"
++    )
++
++
++def test_p2_graph_score_nonzero_for_alpha_entity_query(two_hop_pipeline):
++    """P2 must have graph_score > 0 when querying 'Alpha Entity' (2-hop path exists)."""
++    retriever = HybridRetriever(
++        graph=two_hop_pipeline.graph,
++        vector_index=two_hop_pipeline.vector_index,
++        passages=two_hop_pipeline.passages,
++        embedder=two_hop_pipeline.embedder,
++    )
++    results = retriever.retrieve("Alpha Entity", top_k=3, alpha=0.5)
++    p2_results = [r for r in results if r.passage_id == "P2"]
++    assert p2_results, "P2 should appear in retrieval results"
++    assert p2_results[0].graph_score > 0.0, (
++        f"P2 should have graph_score > 0 via 2-hop; got {p2_results[0].graph_score}"
++    )
++
++
++def test_hybrid_boosts_p2_over_pure_vector(two_hop_pipeline):
++    """Hybrid score for P2 must exceed its pure-vector score (graph adds signal).
++
++    This is the core 2-hop test: graph expansion adds graph_score to P2 even when
++    P2 has minimal/zero token overlap with the query.
++    """
++    retriever = HybridRetriever(
++        graph=two_hop_pipeline.graph,
++        vector_index=two_hop_pipeline.vector_index,
++        passages=two_hop_pipeline.passages,
++        embedder=two_hop_pipeline.embedder,
++    )
++    results = retriever.retrieve("Alpha Entity", top_k=3, alpha=0.5)
++    p2_results = [r for r in results if r.passage_id == "P2"]
++    assert p2_results, "P2 should appear in retrieval results with top_k=3"
++    r = p2_results[0]
++    # hybrid score = 0.5*vector_score + 0.5*graph_score
++    # graph_score > 0 â†’ hybrid_score > vector_score (strictly, since graph_score > 0)
++    assert r.score > r.vector_score, (
++        f"Hybrid score ({r.score}) should exceed vector score ({r.vector_score}) "
++        f"because graph_score={r.graph_score} > 0"
++    )
++
++
++def test_matched_entities_populated(built_pipeline):
++    retriever = HybridRetriever(
++        graph=built_pipeline.graph,
++        vector_index=built_pipeline.vector_index,
++        passages=built_pipeline.passages,
++        embedder=built_pipeline.embedder,
++    )
++    results = retriever.retrieve("Machine Learning Neural Networks", top_k=3)
++    # At least some results should have matched entities
++    any_matched = any(len(r.matched_entities) > 0 for r in results)
++    assert any_matched
++
++
++def test_graph_score_is_presence_flag_and_surfaces_low_vector_passage(built_pipeline):
++    """graph_score behaves as a presence flag for a greedily-extracted query entity.
++
++    The query "Machine Learning" is extracted as a single entity, so the denominator
++    is 1 and every passage's graph_score is exactly 0.0 or 1.0 (the documented
++    presence-flag behaviour). It also demonstrates the GraphRAG payoff: the
++    Backpropagation passage P1 has vector_score 0.0 (no shared tokens) yet
++    graph_score 1.0 via the 2-hop chain Machine Learning -> Neural Networks ->
++    Backpropagation, so hybrid retrieval surfaces a passage pure vector would miss.
++    """
++    retriever = HybridRetriever(
++        graph=built_pipeline.graph,
++        vector_index=built_pipeline.vector_index,
++        passages=built_pipeline.passages,
++        embedder=built_pipeline.embedder,
++    )
++    results = retriever.retrieve("Machine Learning", top_k=4, alpha=0.5)
++    assert all(r.graph_score in (0.0, 1.0) for r in results), (
++        "single greedily-extracted query entity â†’ graph_score is a 0/1 presence flag"
++    )
++    by_id = {r.passage_id: r for r in results}
++    assert by_id["P1"].vector_score == pytest.approx(0.0)
++    assert by_id["P1"].graph_score == pytest.approx(1.0)

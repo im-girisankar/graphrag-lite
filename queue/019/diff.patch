@@ -1,0 +1,110 @@
+diff --git a/tests/test_graph.py b/tests/test_graph.py
+new file mode 100644
+index 0000000..c3e7396
+--- /dev/null
++++ b/tests/test_graph.py
+@@ -0,0 +1,104 @@
++"""Tests for graphrag_lite.graph."""
++
++from __future__ import annotations
++
++from graphrag_lite.corpus import Passage
++from graphrag_lite.graph import KnowledgeGraph, build_graph
++
++
++def _make_passage(pid: str, text: str) -> Passage:
++    return Passage(id=pid, text=text)
++
++
++def test_add_passage_creates_nodes():
++    g = KnowledgeGraph()
++    p = _make_passage("P0", "Machine Learning and Neural Networks")
++    g.add_passage(p, ["Machine Learning", "Neural Networks"], [])
++    assert "Machine Learning" in g.nodes
++    assert "Neural Networks" in g.nodes
++
++
++def test_add_passage_creates_edges():
++    g = KnowledgeGraph()
++    p = _make_passage("P0", "Alpha Beta")
++    g.add_passage(p, ["Alpha", "Beta"], [("Alpha", "Beta", 1.0)])
++    assert len(g.edges) == 1
++    assert g.edges[("Alpha", "Beta")] == 1.0
++
++
++def test_add_passage_accumulates_edge_weight():
++    g = KnowledgeGraph()
++    p0 = _make_passage("P0", "Alpha Beta")
++    p1 = _make_passage("P1", "Alpha Beta again")
++    g.add_passage(p0, ["Alpha", "Beta"], [("Alpha", "Beta", 1.0)])
++    g.add_passage(p1, ["Alpha", "Beta"], [("Alpha", "Beta", 1.0)])
++    assert g.edges[("Alpha", "Beta")] == 2.0
++
++
++def test_neighbors_one_hop():
++    g = KnowledgeGraph()
++    p = _make_passage("P0", "Alpha Beta")
++    g.add_passage(p, ["Alpha", "Beta"], [("Alpha", "Beta", 1.0)])
++    nbrs = g.neighbors("Alpha", hops=1)
++    assert "Beta" in nbrs
++    assert "Alpha" not in nbrs  # source not included
++
++
++def test_neighbors_two_hop():
++    g = KnowledgeGraph()
++    p0 = _make_passage("P0", "Alpha Beta")
++    p1 = _make_passage("P1", "Beta Gamma")
++    g.add_passage(p0, ["Alpha", "Beta"], [("Alpha", "Beta", 1.0)])
++    g.add_passage(p1, ["Beta", "Gamma"], [("Beta", "Gamma", 1.0)])
++    nbrs_2 = g.neighbors("Alpha", hops=2)
++    assert "Beta" in nbrs_2
++    assert "Gamma" in nbrs_2  # 2-hop reachable
++
++
++def test_neighbors_zero_hop_empty():
++    g = KnowledgeGraph()
++    p = _make_passage("P0", "Alpha Beta")
++    g.add_passage(p, ["Alpha", "Beta"], [("Alpha", "Beta", 1.0)])
++    assert g.neighbors("Alpha", hops=0) == set()
++
++
++def test_passages_for_entities():
++    g = KnowledgeGraph()
++    p0 = _make_passage("P0", "Alpha Beta")
++    p1 = _make_passage("P1", "Gamma Delta")
++    g.add_passage(p0, ["Alpha", "Beta"], [])
++    g.add_passage(p1, ["Gamma", "Delta"], [])
++    result = g.passages_for_entities({"Alpha"})
++    assert "P0" in result
++    assert "P1" not in result
++
++
++def test_passages_for_entities_multi():
++    g = KnowledgeGraph()
++    p0 = _make_passage("P0", "Alpha Beta")
++    p1 = _make_passage("P1", "Gamma Beta")
++    g.add_passage(p0, ["Alpha", "Beta"], [])
++    g.add_passage(p1, ["Gamma", "Beta"], [])
++    result = g.passages_for_entities({"Alpha", "Gamma"})
++    assert "P0" in result
++    assert "P1" in result
++
++
++def test_serialization_roundtrip():
++    g = KnowledgeGraph()
++    p = _make_passage("P0", "Alpha Beta Gamma")
++    g.add_passage(p, ["Alpha", "Beta", "Gamma"], [("Alpha", "Beta", 2.5), ("Beta", "Gamma", 1.0)])
++    d = g.to_dict()
++    g2 = KnowledgeGraph.from_dict(d)
++    assert set(g2.nodes.keys()) == set(g.nodes.keys())
++    assert g2.edges == g.edges
++    assert g2.passage_entities["P0"] == g.passage_entities["P0"]
++
++
++def test_build_graph_from_corpus(small_corpus):
++    from graphrag_lite.corpus import split_corpus
++
++    passages = split_corpus(small_corpus, passage_size=200)
++    g = build_graph(passages)
++    assert len(g.nodes) > 0
++    assert len(g.passage_entities) == len(passages)

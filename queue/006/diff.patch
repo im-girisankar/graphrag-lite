@@ -1,0 +1,154 @@
+diff --git a/src/graphrag_lite/eval.py b/src/graphrag_lite/eval.py
+new file mode 100644
+index 0000000..1b5d58d
+--- /dev/null
++++ b/src/graphrag_lite/eval.py
+@@ -0,0 +1,148 @@
++"""Evaluation utilities: recall@k, hit-rate, and a built-in fixture QA set.
++
++Fixture corpus
++--------------
++Four short passages covering Machine Learning, Neural Networks, Backpropagation,
++and Knowledge Graphs (each document fits in a single passage at passage_size=200).
++
++Passage assignments after ``split_corpus``:
++  P0 â€” "Machine Learning ... Artificial Intelligence ... Neural Networks"
++  P1 â€” "Neural Networks ... Backpropagation" (bridge between ML and BP)
++  P2 â€” "Backpropagation ... gradient descent" (no ML / AI mention)
++  P3 â€” "Knowledge Graphs ... Graph Databases ... Neo4j"
++
++Extracted entity graph (heuristic extractor, Title-Case phrases):
++  P0 entities : {Machine Learning, Artificial Intelligence, Neural Networks}
++  P1 entities : {Neural Networks, Backpropagation}
++  P2 entities : {Backpropagation, Gradient}
++  P3 entities : {Knowledge Graphs, Graph Databases, Neo4j}
++
++Entity co-occurrence edges:
++  P0 â†’ (Artificial Intelligence â†” Machine Learning), (Artificial Intelligence â†” Neural Networks),
++        (Machine Learning â†” Neural Networks)
++  P1 â†’ (Backpropagation â†” Neural Networks)
++  P2 â†’ (Backpropagation â†” Gradient)
++  P3 â†’ (Graph Databases â†” Knowledge Graphs), (Knowledge Graphs â†” Neo4j),
++        (Graph Databases â†” Neo4j)
++
++2-hop expansion chain:
++  "Machine Learning" â†’ (P0 edge) â†’ "Neural Networks" â†’ (P1 edge) â†’ "Backpropagation"
++  This chain means a query containing "Machine Learning" can surface P2 via graph
++  expansion even when P2 shares no tokens with the query.
++
++Fixture questions (FIXTURE_EXAMPLES):
++  Q1 â€” "Machine Learning algorithms and Artificial Intelligence"   â†’ relevant [P0]
++  Q2 â€” "Knowledge Graph database systems and Neo4j"               â†’ relevant [P3]
++  Q3 â€” "Neural Networks Backpropagation gradient computation"     â†’ relevant [P1, P2]
++
++The built-in evaluation questions are direct vector hits; the 2-hop graph-expansion
++advantage (hybrid strictly outperforming pure-vector) is demonstrated by the
++controlled ``two_hop_pipeline`` fixture in ``tests/conftest.py`` and covered by
++the tests in ``tests/test_retriever.py``.
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass, field
++
++
++@dataclass
++class EvalExample:
++    """A single QA evaluation example."""
++
++    question: str
++    relevant_passage_ids: list[str] = field(default_factory=list)
++
++
++def recall_at_k(retrieved_ids: list[str], relevant_ids: list[str], k: int) -> float:
++    """Compute Recall@k: fraction of relevant passages found in top-k retrieved.
++
++    Args:
++        retrieved_ids: Ordered list of retrieved passage ids (best first).
++        relevant_ids: Ground-truth relevant passage ids.
++        k: Cut-off rank.
++
++    Returns:
++        Float in [0.0, 1.0].  Returns 1.0 if *relevant_ids* is empty.
++    """
++    if not relevant_ids:
++        return 1.0
++    top_k_set = set(retrieved_ids[:k])
++    hits = sum(1 for r in relevant_ids if r in top_k_set)
++    return hits / len(relevant_ids)
++
++
++def hit_rate(retrieved_ids: list[str], relevant_ids: list[str], k: int) -> float:
++    """Compute Hit-Rate@k: 1.0 if ANY relevant passage is in top-k, else 0.0."""
++    if not relevant_ids:
++        return 1.0
++    top_k_set = set(retrieved_ids[:k])
++    return 1.0 if any(r in top_k_set for r in relevant_ids) else 0.0
++
++
++def evaluate(retriever: object, examples: list[EvalExample], k: int = 5) -> dict:
++    """Run *retriever* on all *examples* and return aggregate metrics.
++
++    Args:
++        retriever: Must have a ``retrieve(query, top_k) -> list[RetrievalResult]`` method.
++        examples: List of EvalExample ground-truth pairs.
++        k: Rank cut-off for recall and hit-rate.
++
++    Returns:
++        Dict with keys ``"recall@k"`` (float) and ``"hit_rate"`` (float), both averaged
++        over all examples.
++    """
++    if not examples:
++        return {"recall@k": 0.0, "hit_rate": 0.0}
++
++    total_recall = 0.0
++    total_hit = 0.0
++    for ex in examples:
++        results = retriever.retrieve(ex.question, top_k=k)  # type: ignore[attr-defined]
++        retrieved_ids = [r.passage_id for r in results]
++        total_recall += recall_at_k(retrieved_ids, ex.relevant_passage_ids, k)
++        total_hit += hit_rate(retrieved_ids, ex.relevant_passage_ids, k)
++
++    n = len(examples)
++    return {"recall@k": total_recall / n, "hit_rate": total_hit / n}
++
++
++# ---------------------------------------------------------------------------
++# Built-in fixture corpus and examples
++# ---------------------------------------------------------------------------
++
++FIXTURE_DOCS: list[str] = [
++    (
++        "Machine Learning is a subfield of Artificial Intelligence. "
++        "Neural Networks are the backbone of modern Machine Learning systems."
++    ),
++    (
++        "Neural Networks learn through Backpropagation. "
++        "The Backpropagation algorithm computes gradients layer by layer in Neural Networks."
++    ),
++    (
++        "Backpropagation uses the chain rule of calculus to compute gradient descent updates. "
++        "Gradient descent minimises the loss function efficiently."
++    ),
++    (
++        "Knowledge Graphs store information as nodes and edges. "
++        "Graph Databases like Neo4j power modern Knowledge Graph applications."
++    ),
++]
++
++# Passage ids are assigned by split_corpus in order: P0, P1, P2, P3
++# (each doc is short enough to be a single passage at default passage_size=200)
++FIXTURE_EXAMPLES: list[EvalExample] = [
++    EvalExample(
++        question="Machine Learning algorithms and Artificial Intelligence",
++        relevant_passage_ids=["P0"],
++    ),
++    EvalExample(
++        question="Knowledge Graph database systems and Neo4j",
++        relevant_passage_ids=["P3"],
++    ),
++    EvalExample(
++        question="Neural Networks Backpropagation gradient computation",
++        relevant_passage_ids=["P1", "P2"],
++    ),
++]

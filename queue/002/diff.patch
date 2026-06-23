@@ -1,0 +1,96 @@
+diff --git a/src/graphrag_lite/cli.py b/src/graphrag_lite/cli.py
+new file mode 100644
+index 0000000..d1b9e0c
+--- /dev/null
++++ b/src/graphrag_lite/cli.py
+@@ -0,0 +1,90 @@
++"""Command-line interface: ``grl build`` and ``grl ask``."""
++
++from __future__ import annotations
++
++import argparse
++import json
++import sys
++from pathlib import Path
++
++
++def _cmd_build(args: argparse.Namespace) -> None:
++    """Build a GraphRAG index from a corpus file."""
++    from graphrag_lite.pipeline import GraphRAGPipeline  # noqa: PLC0415
++
++    corpus_path = Path(args.corpus)
++    if not corpus_path.exists():
++        print(f"Error: corpus file not found: {corpus_path}", file=sys.stderr)
++        sys.exit(1)
++
++    raw = corpus_path.read_text(encoding="utf-8")
++
++    # Support JSON array of strings or plain text (one doc per line)
++    if raw.strip().startswith("["):
++        docs: list[str] = json.loads(raw)
++    else:
++        docs = [line for line in raw.splitlines() if line.strip()]
++
++    pipeline = GraphRAGPipeline(passage_size=args.passage_size)
++    pipeline.build(docs)
++    pipeline.save(args.output)
++    print(f"Index built: {len(pipeline.passages)} passages â†’ {args.output}")
++
++
++def _cmd_ask(args: argparse.Namespace) -> None:
++    """Query an existing GraphRAG index."""
++    from graphrag_lite.pipeline import GraphRAGPipeline  # noqa: PLC0415
++
++    pipeline = GraphRAGPipeline.load(args.index)
++    answer = pipeline.ask(args.query, top_k=args.top_k, alpha=args.alpha)
++    print(answer)
++
++
++def main(argv: list[str] | None = None) -> None:
++    """Entry point for the ``grl`` CLI."""
++    parser = argparse.ArgumentParser(
++        prog="grl",
++        description="graphrag-lite: compact GraphRAG pipeline.",
++    )
++    sub = parser.add_subparsers(dest="command", required=True)
++
++    # --- build ---
++    build_p = sub.add_parser("build", help="Build a GraphRAG index from a corpus.")
++    build_p.add_argument(
++        "--corpus",
++        required=True,
++        help="Path to corpus file (JSON array of strings or plain text, one doc per line).",
++    )
++    build_p.add_argument("--output", required=True, help="Directory to write the index to.")
++    build_p.add_argument(
++        "--passage-size",
++        dest="passage_size",
++        type=int,
++        default=200,
++        help="Word count per passage (default 200).",
++    )
++
++    # --- ask ---
++    ask_p = sub.add_parser("ask", help="Query a built GraphRAG index.")
++    ask_p.add_argument("--index", required=True, help="Index directory (from grl build).")
++    ask_p.add_argument("--query", required=True, help="Question to ask.")
++    ask_p.add_argument("--top-k", dest="top_k", type=int, default=5)
++    ask_p.add_argument(
++        "--alpha",
++        type=float,
++        default=0.5,
++        help="Vector weight (0=pure graph, 1=pure vector; default 0.5).",
++    )
++
++    ns = parser.parse_args(argv)
++    if ns.command == "build":
++        _cmd_build(ns)
++    elif ns.command == "ask":
++        _cmd_ask(ns)
++    else:
++        parser.print_help()
++        sys.exit(1)
++
++
++if __name__ == "__main__":
++    main()

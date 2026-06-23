@@ -1,0 +1,84 @@
+diff --git a/tests/test_index.py b/tests/test_index.py
+new file mode 100644
+index 0000000..e38b704
+--- /dev/null
++++ b/tests/test_index.py
+@@ -0,0 +1,78 @@
++"""Tests for graphrag_lite.index."""
++
++from __future__ import annotations
++
++from graphrag_lite.corpus import Passage
++from graphrag_lite.embeddings import HashEmbedder
++from graphrag_lite.index import VectorIndex
++
++
++def _make_passage(pid: str, text: str) -> Passage:
++    return Passage(id=pid, text=text)
++
++
++def test_vector_index_build_and_length():
++    passages = [
++        _make_passage("P0", "machine learning algorithms"),
++        _make_passage("P1", "knowledge graph databases"),
++        _make_passage("P2", "neural network training"),
++    ]
++    emb = HashEmbedder(dim=64)
++    idx = VectorIndex()
++    idx.build(passages, emb)
++    assert len(idx) == 3
++
++
++def test_vector_index_query_returns_top_k():
++    passages = [
++        _make_passage("P0", "machine learning algorithms"),
++        _make_passage("P1", "knowledge graph databases"),
++        _make_passage("P2", "neural network training"),
++    ]
++    emb = HashEmbedder(dim=64)
++    idx = VectorIndex()
++    idx.build(passages, emb)
++    q_vec = emb.embed(["machine learning"])[0]
++    results = idx.query(q_vec, top_k=2)
++    assert len(results) == 2
++
++
++def test_vector_index_scores_descending():
++    passages = [
++        _make_passage("P0", "machine learning algorithms"),
++        _make_passage("P1", "knowledge graph databases"),
++        _make_passage("P2", "neural network training"),
++    ]
++    emb = HashEmbedder(dim=64)
++    idx = VectorIndex()
++    idx.build(passages, emb)
++    q_vec = emb.embed(["machine learning"])[0]
++    results = idx.query(q_vec, top_k=3)
++    scores = [s for _, s in results]
++    assert scores == sorted(scores, reverse=True)
++
++
++def test_vector_index_most_similar_passage_ranks_first():
++    passages = [
++        _make_passage("P0", "the quick brown fox jumps over the lazy dog"),
++        _make_passage("P1", "machine learning neural networks deep learning"),
++        _make_passage("P2", "machine learning algorithms optimization"),
++    ]
++    emb = HashEmbedder(dim=256)
++    idx = VectorIndex()
++    idx.build(passages, emb)
++    # Query about machine learning â†’ P1 or P2 should rank above P0
++    q_vec = emb.embed(["machine learning"])[0]
++    results = idx.query(q_vec, top_k=3)
++    top_id = results[0][0]
++    assert top_id in ("P1", "P2")
++
++
++def test_vector_index_top_k_capped():
++    passages = [_make_passage(f"P{i}", f"text number {i}") for i in range(5)]
++    emb = HashEmbedder(dim=32)
++    idx = VectorIndex()
++    idx.build(passages, emb)
++    q_vec = emb.embed(["text"])[0]
++    results = idx.query(q_vec, top_k=3)
++    assert len(results) <= 3

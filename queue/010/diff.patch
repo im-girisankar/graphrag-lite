@@ -1,0 +1,169 @@
+diff --git a/src/graphrag_lite/pipeline.py b/src/graphrag_lite/pipeline.py
+new file mode 100644
+index 0000000..7648699
+--- /dev/null
++++ b/src/graphrag_lite/pipeline.py
+@@ -0,0 +1,163 @@
++"""End-to-end GraphRAG pipeline: build â†’ persist â†’ ask."""
++
++from __future__ import annotations
++
++import json
++from pathlib import Path
++
++from graphrag_lite.composer import compose_answer
++from graphrag_lite.corpus import Passage, split_corpus
++from graphrag_lite.embeddings import Embedder, HashEmbedder
++from graphrag_lite.graph import KnowledgeGraph, build_graph
++from graphrag_lite.index import VectorIndex
++from graphrag_lite.retriever import HybridRetriever
++
++
++class GraphRAGPipeline:
++    """Orchestrates the full GraphRAG workflow.
++
++    Usage::
++
++        pipeline = GraphRAGPipeline()
++        pipeline.build(docs)
++        answer = pipeline.ask("What is Machine Learning?")
++        pipeline.save("/tmp/my_index")
++
++        pipeline2 = GraphRAGPipeline.load("/tmp/my_index")
++        answer2 = pipeline2.ask("...")
++    """
++
++    def __init__(
++        self,
++        embedder: Embedder | None = None,
++        passage_size: int = 200,
++        top_k: int = 5,
++        alpha: float = 0.5,
++    ) -> None:
++        self.embedder: Embedder = embedder or HashEmbedder()
++        self.passage_size = passage_size
++        self.top_k = top_k
++        self.alpha = alpha
++
++        self.passages: dict[str, Passage] = {}
++        self.graph: KnowledgeGraph = KnowledgeGraph()
++        self.vector_index: VectorIndex = VectorIndex()
++        self._built: bool = False
++
++    # ------------------------------------------------------------------
++    # Build
++    # ------------------------------------------------------------------
++
++    def build(self, docs: list[str]) -> None:
++        """Ingest documents: split â†’ extract â†’ build graph â†’ embed â†’ index."""
++        passage_list = split_corpus(docs, passage_size=self.passage_size)
++        self.passages = {p.id: p for p in passage_list}
++        self.graph = build_graph(passage_list)
++        self.vector_index = VectorIndex()
++        self.vector_index.build(passage_list, self.embedder)
++        self._built = True
++
++    # ------------------------------------------------------------------
++    # Ask
++    # ------------------------------------------------------------------
++
++    def ask(self, query: str, top_k: int | None = None, alpha: float | None = None) -> str:
++        """Retrieve relevant passages and compose an extractive cited answer.
++
++        Args:
++            query: Natural language question.
++            top_k: Override the pipeline default top_k.
++            alpha: Override the pipeline default alpha.
++
++        Returns:
++            Cited extractive answer string.
++        """
++        if not self._built:
++            raise RuntimeError("Call pipeline.build(docs) before asking questions.")
++
++        retriever = HybridRetriever(
++            graph=self.graph,
++            vector_index=self.vector_index,
++            passages=self.passages,
++            embedder=self.embedder,
++        )
++        results = retriever.retrieve(
++            query,
++            top_k=top_k if top_k is not None else self.top_k,
++            alpha=alpha if alpha is not None else self.alpha,
++        )
++        return compose_answer(query, results, self.passages)
++
++    # ------------------------------------------------------------------
++    # Persistence
++    # ------------------------------------------------------------------
++
++    def save(self, path: str | Path) -> None:
++        """Save the pipeline state to *path* directory (JSON files).
++
++        Creates the directory if it does not exist.
++        """
++        out = Path(path)
++        out.mkdir(parents=True, exist_ok=True)
++
++        # Passages
++        passages_data = {
++            pid: {"id": p.id, "text": p.text, "metadata": p.metadata}
++            for pid, p in self.passages.items()
++        }
++        (out / "passages.json").write_text(json.dumps(passages_data, indent=2), encoding="utf-8")
++
++        # Graph
++        (out / "graph.json").write_text(
++            json.dumps(self.graph.to_dict(), indent=2), encoding="utf-8"
++        )
++
++        # Vector index (store vectors)
++        index_data = [{"id": pid, "vector": vec} for pid, vec in self.vector_index._entries]
++        (out / "index.json").write_text(json.dumps(index_data, indent=2), encoding="utf-8")
++
++        # Config
++        config = {
++            "passage_size": self.passage_size,
++            "top_k": self.top_k,
++            "alpha": self.alpha,
++            "embedder": type(self.embedder).__name__,
++        }
++        (out / "config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
++
++    @classmethod
++    def load(cls, path: str | Path, embedder: Embedder | None = None) -> GraphRAGPipeline:
++        """Load a previously saved pipeline from *path* directory.
++
++        Args:
++            path: Directory written by ``save()``.
++            embedder: Embedder instance to use (defaults to HashEmbedder).
++
++        Returns:
++            A fully initialised GraphRAGPipeline ready for ``ask()``.
++        """
++        src = Path(path)
++
++        config_raw = json.loads((src / "config.json").read_text(encoding="utf-8"))
++        pipeline = cls(
++            embedder=embedder or HashEmbedder(),
++            passage_size=config_raw.get("passage_size", 200),
++            top_k=config_raw.get("top_k", 5),
++            alpha=config_raw.get("alpha", 0.5),
++        )
++
++        passages_raw = json.loads((src / "passages.json").read_text(encoding="utf-8"))
++        pipeline.passages = {
++            pid: Passage(id=d["id"], text=d["text"], metadata=d.get("metadata", {}))
++            for pid, d in passages_raw.items()
++        }
++
++        graph_raw = json.loads((src / "graph.json").read_text(encoding="utf-8"))
++        pipeline.graph = KnowledgeGraph.from_dict(graph_raw)
++
++        index_raw = json.loads((src / "index.json").read_text(encoding="utf-8"))
++        pipeline.vector_index = VectorIndex()
++        pipeline.vector_index._entries = [(entry["id"], entry["vector"]) for entry in index_raw]
++
++        pipeline._built = True
++        return pipeline

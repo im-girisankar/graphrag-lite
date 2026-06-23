@@ -1,0 +1,83 @@
+diff --git a/tests/test_extractor.py b/tests/test_extractor.py
+new file mode 100644
+index 0000000..f7988d8
+--- /dev/null
++++ b/tests/test_extractor.py
+@@ -0,0 +1,77 @@
++"""Tests for graphrag_lite.extractor."""
++
++from __future__ import annotations
++
++from graphrag_lite.corpus import Passage
++from graphrag_lite.extractor import extract_entities, extract_relations
++
++
++def test_extract_entities_finds_multiword():
++    text = "Machine Learning is used in Natural Language Processing systems."
++    entities = extract_entities(text)
++    # Multi-word phrases should be extracted
++    assert "Machine Learning" in entities or "Natural Language Processing" in entities
++
++
++def test_extract_entities_returns_list():
++    entities = extract_entities("Hello World example text here")
++    assert isinstance(entities, list)
++
++
++def test_extract_entities_deduplication():
++    text = "Neural Networks are great. Neural Networks power AI. Neural Networks scale."
++    entities = extract_entities(text)
++    # "Neural Networks" should appear at most once
++    count = entities.count("Neural Networks")
++    assert count <= 1
++
++
++def test_extract_entities_on_known_corpus():
++    text = (
++        "Machine Learning is a subfield of Artificial Intelligence. "
++        "Neural Networks are the backbone of modern Machine Learning systems."
++    )
++    entities = extract_entities(text)
++    # Should find at least one of these named entities
++    found = {"Machine Learning", "Artificial Intelligence", "Neural Networks"}
++    assert any(e in found for e in entities)
++
++
++def test_extract_relations_returns_triples():
++    text = "Machine Learning and Neural Networks work together in Artificial Intelligence."
++    passage = Passage(id="P0", text=text)
++    entities = extract_entities(text)
++    relations = extract_relations(passage, entities)
++    assert isinstance(relations, list)
++    for rel in relations:
++        assert len(rel) == 3
++        assert isinstance(rel[0], str)
++        assert isinstance(rel[1], str)
++        assert isinstance(rel[2], float)
++
++
++def test_extract_relations_weights_positive():
++    text = "Alpha Beta and Gamma Delta appear together in this passage."
++    passage = Passage(id="P0", text=text)
++    entities = extract_entities(text)
++    relations = extract_relations(passage, entities)
++    for _, _, w in relations:
++        assert w > 0.0
++
++
++def test_extract_relations_pairs_exist():
++    # Force known entities into a passage
++    passage = Passage(id="P0", text="Machine Learning Neural Networks Backpropagation present")
++    entities = ["Machine Learning", "Neural Networks", "Backpropagation"]
++    relations = extract_relations(passage, entities)
++    # At least one pair should be found (all 3 entities are in passage text)
++    assert len(relations) > 0
++
++
++def test_extract_relations_entity_not_in_passage_skipped():
++    passage = Passage(id="P0", text="Only Machine Learning is here")
++    entities = ["Machine Learning", "Absent Entity"]
++    relations = extract_relations(passage, entities)
++    # "Absent Entity" is not in text, so no pair involving it
++    for ea, eb, _ in relations:
++        assert "Absent Entity" not in (ea, eb)

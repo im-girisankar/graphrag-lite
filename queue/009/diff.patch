@@ -1,0 +1,47 @@
+diff --git a/src/graphrag_lite/index.py b/src/graphrag_lite/index.py
+new file mode 100644
+index 0000000..44f2b57
+--- /dev/null
++++ b/src/graphrag_lite/index.py
+@@ -0,0 +1,41 @@
++"""In-memory vector index over passage embeddings."""
++
++from __future__ import annotations
++
++from graphrag_lite.corpus import Passage
++from graphrag_lite.embeddings import Embedder, cosine_similarity
++
++
++class VectorIndex:
++    """Flat in-memory vector index supporting cosine-similarity search.
++
++    Build once with ``build()``, then call ``query()`` as many times as needed.
++    """
++
++    def __init__(self) -> None:
++        self._entries: list[tuple[str, list[float]]] = []  # (passage_id, vector)
++
++    def build(self, passages: list[Passage], embedder: Embedder) -> None:
++        """Embed all passages and store (passage_id, vector) pairs."""
++        texts = [p.text for p in passages]
++        vectors = embedder.embed(texts)
++        self._entries = [(p.id, v) for p, v in zip(passages, vectors, strict=False)]
++
++    def query(self, q_vec: list[float], top_k: int = 5) -> list[tuple[str, float]]:
++        """Return the *top_k* most similar passage ids with their cosine scores.
++
++        Results are sorted descending by score.
++
++        Args:
++            q_vec: Query embedding vector (need not be normalised).
++            top_k: Maximum number of results to return.
++
++        Returns:
++            List of (passage_id, score) tuples, highest score first.
++        """
++        scored = [(pid, cosine_similarity(q_vec, vec)) for pid, vec in self._entries]
++        scored.sort(key=lambda x: x[1], reverse=True)
++        return scored[:top_k]
++
++    def __len__(self) -> int:
++        return len(self._entries)

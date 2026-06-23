@@ -1,0 +1,80 @@
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+new file mode 100644
+index 0000000..7f08708
+--- /dev/null
++++ b/tests/test_pipeline.py
+@@ -0,0 +1,74 @@
++"""Tests for graphrag_lite.pipeline."""
++
++from __future__ import annotations
++
++import pytest
++
++from graphrag_lite.pipeline import GraphRAGPipeline
++
++
++def test_pipeline_build(small_corpus):
++    pipeline = GraphRAGPipeline(passage_size=200)
++    pipeline.build(small_corpus)
++    assert pipeline._built
++    assert len(pipeline.passages) > 0
++    assert len(pipeline.graph.nodes) > 0
++
++
++def test_pipeline_ask_returns_string(built_pipeline):
++    answer = built_pipeline.ask("What is Machine Learning?")
++    assert isinstance(answer, str)
++    assert len(answer) > 0
++
++
++def test_pipeline_ask_contains_citation(built_pipeline):
++    answer = built_pipeline.ask("Machine Learning Neural Networks")
++    assert "[P" in answer  # at least one citation tag
++
++
++def test_pipeline_ask_before_build_raises():
++    pipeline = GraphRAGPipeline()
++    with pytest.raises(RuntimeError):
++        pipeline.ask("test")
++
++
++def test_pipeline_save_load_roundtrip(built_pipeline, tmp_path):
++    save_dir = str(tmp_path / "index")
++    built_pipeline.save(save_dir)
++
++    loaded = GraphRAGPipeline.load(save_dir)
++    assert loaded._built
++    assert set(loaded.passages.keys()) == set(built_pipeline.passages.keys())
++
++
++def test_pipeline_save_creates_files(built_pipeline, tmp_path):
++    save_dir = tmp_path / "index"
++    built_pipeline.save(str(save_dir))
++    assert (save_dir / "passages.json").exists()
++    assert (save_dir / "graph.json").exists()
++    assert (save_dir / "index.json").exists()
++    assert (save_dir / "config.json").exists()
++
++
++def test_pipeline_load_preserves_graph_nodes(built_pipeline, tmp_path):
++    save_dir = str(tmp_path / "index")
++    built_pipeline.save(save_dir)
++    loaded = GraphRAGPipeline.load(save_dir)
++    assert set(loaded.graph.nodes.keys()) == set(built_pipeline.graph.nodes.keys())
++
++
++def test_pipeline_load_ask_works(built_pipeline, tmp_path):
++    save_dir = str(tmp_path / "index")
++    built_pipeline.save(save_dir)
++    loaded = GraphRAGPipeline.load(save_dir)
++    answer = loaded.ask("Knowledge Graph databases")
++    assert isinstance(answer, str)
++    assert len(answer) > 0
++
++
++def test_pipeline_custom_alpha(built_pipeline):
++    answer_vector = built_pipeline.ask("Machine Learning", alpha=1.0)
++    answer_graph = built_pipeline.ask("Machine Learning", alpha=0.0)
++    # Both should return strings (content may differ)
++    assert isinstance(answer_vector, str)
++    assert isinstance(answer_graph, str)

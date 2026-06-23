@@ -1,0 +1,132 @@
+diff --git a/src/graphrag_lite/extractor.py b/src/graphrag_lite/extractor.py
+new file mode 100644
+index 0000000..bc6e821
+--- /dev/null
++++ b/src/graphrag_lite/extractor.py
+@@ -0,0 +1,126 @@
++"""Heuristic entity and relation extraction from text passages.
++
++Entity extraction uses two regex patterns:
++  1. Multi-word capitalized noun phrases: sequences of 2+ Title-cased words
++     (e.g. "Natural Language Processing", "Knowledge Graph").
++  2. Single capitalized words that are NOT at the start of a sentence.
++
++Relation extraction: co-occurrence pairs within a passage (simple, weight=1.0).
++Optional LLM path: ``extract_entities_llm`` lazy-imports ``anthropic``.
++"""
++
++from __future__ import annotations
++
++import re
++
++from graphrag_lite.corpus import Passage
++
++# Pattern for 2+ consecutive Title-cased words (multi-word named entities)
++_MULTIWORD_RE = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b")
++
++# Pattern for single Title-cased words (skip all-caps abbreviations of length>1)
++_SINGLE_RE = re.compile(r"(?<![.!?]\s)\b([A-Z][a-z]{1,})\b")
++
++# Sentence-start pattern to exclude first word of sentence from single-word entities
++_SENT_START_RE = re.compile(r"(?:^|(?<=[.!?])\s+)([A-Z][a-z]+)")
++
++
++def extract_entities(text: str) -> list[str]:
++    """Extract capitalized noun-phrase entities from *text*.
++
++    Multi-word phrases take priority; single-word entities are returned only
++    when they are not subsumed by a multi-word match.
++
++    Returns a deduplicated list preserving first-occurrence order.
++    """
++    seen: set[str] = set()
++    entities: list[str] = []
++
++    # Collect all multi-word spans
++    multi_spans: list[tuple[int, int, str]] = []
++    for m in _MULTIWORD_RE.finditer(text):
++        phrase = m.group(1)
++        if phrase not in seen:
++            seen.add(phrase)
++            entities.append(phrase)
++        multi_spans.append((m.start(), m.end(), phrase))
++
++    # Collect sentence-start positions to exclude them from single-word extraction
++    sent_starts: set[int] = set()
++    for m in _SENT_START_RE.finditer(text):
++        sent_starts.add(m.start(1))
++
++    # Single-word entities not inside a multi-word span and not sentence-start
++    for m in _SINGLE_RE.finditer(text):
++        word = m.group(1)
++        pos = m.start(1)
++        # Skip if inside a multi-word span
++        inside_multi = any(s <= pos < e for s, e, _ in multi_spans)
++        if inside_multi:
++            continue
++        # Skip sentence-start words
++        if pos in sent_starts:
++            continue
++        if word not in seen:
++            seen.add(word)
++            entities.append(word)
++
++    return entities
++
++
++def extract_relations(
++    passage: Passage,
++    entities: list[str],
++) -> list[tuple[str, str, float]]:
++    """Return co-occurrence (entity_a, entity_b, weight) triples for *passage*.
++
++    All pairs of distinct entities that both appear in the passage are emitted
++    with weight 1.0 (simple co-occurrence).  Pairs are ordered so entity_a < entity_b
++    lexicographically to avoid duplicate (a,b)/(b,a) entries.
++    """
++    # Filter to entities that actually appear in this passage
++    present = [e for e in entities if e in passage.text]
++
++    relations: list[tuple[str, str, float]] = []
++    for i, ea in enumerate(present):
++        for eb in present[i + 1 :]:
++            a, b = (ea, eb) if ea < eb else (eb, ea)
++            relations.append((a, b, 1.0))
++
++    return relations
++
++
++# ---------------------------------------------------------------------------
++# Optional LLM path (lazy-imports anthropic)
++# ---------------------------------------------------------------------------
++
++
++def extract_entities_llm(text: str, client: object) -> list[str]:  # pragma: no cover
++    """Extract entities using an Anthropic client (lazy import).
++
++    *client* must be an ``anthropic.Anthropic`` instance.  The function is only
++    available when the ``llm`` optional dependency is installed.
++
++    Raises:
++        ImportError: if ``anthropic`` is not installed.
++    """
++    try:
++        import anthropic  # noqa: F401  # lazy
++    except ImportError as exc:
++        raise ImportError(
++            "Install graphrag-lite[llm] to use LLM-assisted entity extraction."
++        ) from exc
++
++    prompt = (
++        f"Extract all named entities (people, places, organisations, concepts) "
++        f"from the following text. Return one entity per line, no commentary.\n\n{text}"
++    )
++    # client is typed as object to avoid hard import; cast at runtime
++    message = client.messages.create(  # type: ignore[attr-defined]
++        model="claude-haiku-4-5",
++        max_tokens=512,
++        messages=[{"role": "user", "content": prompt}],
++    )
++    text_block = next((b for b in message.content if getattr(b, "type", None) == "text"), None)
++    raw = text_block.text if text_block is not None else ""
++    return [line.strip() for line in raw.splitlines() if line.strip()]

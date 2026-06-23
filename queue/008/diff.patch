@@ -1,0 +1,134 @@
+diff --git a/src/graphrag_lite/graph.py b/src/graphrag_lite/graph.py
+new file mode 100644
+index 0000000..8ac3b77
+--- /dev/null
++++ b/src/graphrag_lite/graph.py
+@@ -0,0 +1,128 @@
++"""In-memory knowledge graph: nodes=entities, edges=co-occurrence, passage membership."""
++
++from __future__ import annotations
++
++from dataclasses import dataclass, field
++from typing import Any
++
++from graphrag_lite.corpus import Passage
++from graphrag_lite.extractor import extract_entities, extract_relations
++
++
++@dataclass
++class KnowledgeGraph:
++    """Directed knowledge graph with entity nodes and weighted co-occurrence edges.
++
++    Attributes:
++        nodes: mapping of entity string â†’ arbitrary metadata dict.
++        edges: mapping of (entity_a, entity_b) tuple â†’ accumulated weight float.
++        passage_entities: mapping of passage_id â†’ set of entity strings in that passage.
++    """
++
++    nodes: dict[str, dict[str, Any]] = field(default_factory=dict)
++    edges: dict[tuple[str, str], float] = field(default_factory=dict)
++    passage_entities: dict[str, set[str]] = field(default_factory=dict)
++
++    # ------------------------------------------------------------------
++    # Mutation
++    # ------------------------------------------------------------------
++
++    def add_passage(
++        self,
++        passage: Passage,
++        entities: list[str],
++        relations: list[tuple[str, str, float]],
++    ) -> None:
++        """Incorporate a passage's extracted entities and relations into the graph."""
++        for ent in entities:
++            if ent not in self.nodes:
++                self.nodes[ent] = {}
++            # Track which passages mention this entity
++            self.nodes[ent].setdefault("passage_ids", [])
++            if passage.id not in self.nodes[ent]["passage_ids"]:
++                self.nodes[ent]["passage_ids"].append(passage.id)
++
++        for ea, eb, weight in relations:
++            key = (ea, eb) if ea <= eb else (eb, ea)
++            self.edges[key] = self.edges.get(key, 0.0) + weight
++
++        self.passage_entities[passage.id] = set(entities)
++
++    # ------------------------------------------------------------------
++    # Query helpers
++    # ------------------------------------------------------------------
++
++    def neighbors(self, entity: str, hops: int = 1) -> set[str]:
++        """Return all entities reachable from *entity* within *hops* edges.
++
++        The source entity itself is NOT included in the return set.
++        """
++        if hops < 1:
++            return set()
++
++        visited: set[str] = {entity}
++        frontier: set[str] = {entity}
++
++        for _ in range(hops):
++            next_frontier: set[str] = set()
++            for node in frontier:
++                for ea, eb in self.edges:
++                    if ea == node and eb not in visited:
++                        next_frontier.add(eb)
++                    elif eb == node and ea not in visited:
++                        next_frontier.add(ea)
++            visited |= next_frontier
++            frontier = next_frontier
++
++        visited.discard(entity)
++        return visited
++
++    def passages_for_entities(self, entities: set[str] | list[str]) -> set[str]:
++        """Return all passage ids that contain at least one of *entities*."""
++        entity_set = set(entities)
++        result: set[str] = set()
++        for pid, ents in self.passage_entities.items():
++            if ents & entity_set:
++                result.add(pid)
++        return result
++
++    # ------------------------------------------------------------------
++    # Serialization
++    # ------------------------------------------------------------------
++
++    def to_dict(self) -> dict[str, Any]:
++        """Serialise the graph to a JSON-compatible dict."""
++        return {
++            "nodes": self.nodes,
++            "edges": {f"{ea}|||{eb}": w for (ea, eb), w in self.edges.items()},
++            "passage_entities": {
++                pid: list(ents) for pid, ents in self.passage_entities.items()
++            },
++        }
++
++    @classmethod
++    def from_dict(cls, data: dict[str, Any]) -> KnowledgeGraph:
++        """Reconstruct a KnowledgeGraph from a serialised dict."""
++        g = cls()
++        g.nodes = data.get("nodes", {})
++        for key_str, w in data.get("edges", {}).items():
++            ea, eb = key_str.split("|||", 1)
++            g.edges[(ea, eb)] = w
++        for pid, ents in data.get("passage_entities", {}).items():
++            g.passage_entities[pid] = set(ents)
++        return g
++
++
++# ---------------------------------------------------------------------------
++# Convenience builder
++# ---------------------------------------------------------------------------
++
++
++def build_graph(passages: list[Passage]) -> KnowledgeGraph:
++    """Build a KnowledgeGraph from a list of Passage objects using heuristic extraction."""
++    g = KnowledgeGraph()
++    for passage in passages:
++        entities = extract_entities(passage.text)
++        relations = extract_relations(passage, entities)
++        g.add_passage(passage, entities, relations)
++    return g
