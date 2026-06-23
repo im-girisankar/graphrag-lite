@@ -1,0 +1,12 @@
+# Core runtime dependencies (graphrag-lite has no hard runtime deps)
+# Install optional groups with: pip install -e ".[embeddings,llm,dev]"
+
+# Dev / test
+pytest>=7
+ruff>=0.4
+
+# Optional: real embeddings
+# sentence-transformers>=2
+
+# Optional: LLM-composed answers
+# anthropic>=0.39
